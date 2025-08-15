@@ -1,9 +1,4 @@
 // index.js
-// Zero-dep, minimal-change version of your bot.
-// - Uses gemini-2.0-flash
-// - Adds rate limiting + retry (no external packages)
-// - Deduplicates duplicate Telegram updates
-
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
@@ -21,33 +16,38 @@ if (!telegramToken || !geminiApiKey) {
 }
 
 const bot = new TelegramBot(telegramToken, { polling: true });
-
 const genAI = new GoogleGenerativeAI(geminiApiKey);
-// CHANGED: Use gemini-2.0-flash (main model)
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-console.log("Services initialized. Bot is starting...");
+// --- MODELS ---
+const models = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flashlite",
+  "gemini-2.5-pro",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-1.5-pro"
+];
+let currentModelIndex = 0;
 
-// --- SESSION STORAGE (per chat) ---
+function getCurrentModel() {
+  return genAI.getGenerativeModel({ model: models[currentModelIndex] });
+}
+
+// --- SESSION STORAGE ---
 const chatSessions = {};
-
-// --- BOT PERSONALITY (system prompt) ---
 const systemPrompt = "You are ChatGPT 5, a friendly, witty, and highly intelligent AI assistant. Your writing style is natural, engaging, and helpful, like talking to a clever and empathetic friend. You avoid robotic language and excessive markdown formatting. You aim to provide great conversation and accurate information.";
 
-// --- DEDUP: prevent processing same Telegram update twice ---
+// --- DEDUPLICATION ---
 const processedMsgIds = new Set();
 function shouldProcessOnce(messageId) {
   if (!messageId) return true;
   if (processedMsgIds.has(messageId)) return false;
   processedMsgIds.add(messageId);
-  // expire after 6 hours
   setTimeout(() => processedMsgIds.delete(messageId), 6 * 60 * 60 * 1000);
   return true;
 }
 
-// --- ZERO-DEP RATE LIMITER + QUEUE ---
-// minGap = milliseconds between starting tasks (avoids bursts)
-// concurrency = number of parallel calls allowed
+// --- RATE LIMITER + QUEUE ---
 function createLimiter({ minGap = 600, concurrency = 1 } = {}) {
   let active = 0;
   let last = 0;
@@ -68,7 +68,6 @@ function createLimiter({ minGap = 600, concurrency = 1 } = {}) {
       reject(err);
     } finally {
       active--;
-      // schedule next pump microtask so the queue flows continuously
       setImmediate(pump);
     }
   }
@@ -81,23 +80,35 @@ function createLimiter({ minGap = 600, concurrency = 1 } = {}) {
 }
 const limiter = createLimiter({ minGap: 600, concurrency: 1 });
 
-// --- CALL WRAPPER: limiter + retry/backoff (handles 429s) ---
+// --- GEMINI CALL WITH RETRY + MODEL SWITCH ---
 async function callGeminiWithRetry(taskFn, { maxAttempts = 3 } = {}) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let attempt = 0;
+
   while (true) {
     try {
-      // run the task through the queue/limiter
       return await limiter(taskFn);
     } catch (err) {
       attempt++;
       const msg = String(err?.message || "");
       const status = err?.status || err?.response?.status || null;
       const is429 = status === 429 || /quota|too many requests|rate limit|rateLimit/i.test(msg);
-      if (!is429 || attempt >= maxAttempts) throw err;
-      // exponential backoff (2s, 4s, ...)
+
+      if (!is429) throw err;
+
+      console.warn(`Rate limit on model ${models[currentModelIndex]} (attempt ${attempt}).`);
+
+      // Switch model if possible
+      if (currentModelIndex < models.length - 1) {
+        currentModelIndex++;
+        console.log(`Switching to fallback model: ${models[currentModelIndex]}`);
+      } else {
+        console.log("Already at last fallback model, applying backoff.");
+      }
+
+      if (attempt >= maxAttempts) throw err;
+
       const backoff = Math.min(30000, 1000 * 2 ** attempt);
-      console.warn(`Gemini rate-limited (attempt ${attempt}). backing off ${backoff}ms`);
       await sleep(backoff);
     }
   }
@@ -110,37 +121,31 @@ bot.on('message', async (msg) => {
   const messageId = msg.message_id;
 
   if (!chatId || !userMessage || userMessage.startsWith('/')) return;
-  if (!shouldProcessOnce(messageId)) return; // avoid duplicate processing
+  if (!shouldProcessOnce(messageId)) return;
 
   try {
     await bot.sendChatAction(chatId, 'typing');
 
-    // create a persistent chat session with the system prompt if missing
     if (!chatSessions[chatId]) {
       console.log(`Creating new chat session for chatId: ${chatId}`);
-      chatSessions[chatId] = model.startChat({
+      chatSessions[chatId] = getCurrentModel().startChat({
         history: [
           { role: "user", parts: [{ text: "Hello, let's have a great conversation." }] },
           { role: "model", parts: [{ text: systemPrompt }] },
         ],
-        generationConfig: {
-          maxOutputTokens: 1000,
-        },
+        generationConfig: { maxOutputTokens: 1000 },
       });
     }
 
     const userChat = chatSessions[chatId];
 
-    // run through limiter + retry
     const geminiText = await callGeminiWithRetry(async () => {
       const result = await userChat.sendMessage(userMessage);
       const response = await result.response;
-      // response.text may be a function in some SDK versions
       const text = typeof response.text === "function" ? response.text() : response.text;
       return text || "Sorry, I couldn't produce a response.";
     });
 
-    // send to user
     await bot.sendMessage(chatId, geminiText);
 
   } catch (error) {
