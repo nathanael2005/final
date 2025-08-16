@@ -35,7 +35,8 @@ function getCurrentModel() {
 
 // --- SESSION STORAGE ---
 const chatSessions = {};
-const systemPrompt = "You are ChatGPT 5, a friendly, witty, and highly intelligent AI assistant. Your writing style is natural, engaging, and helpful, like talking to a clever and empathetic friend. You avoid robotic language and excessive markdown formatting. You aim to provide great conversation and accurate information.";
+// MODIFIED: Added instruction for concise answers
+const systemPrompt = "You are ChatGPT 5, a friendly, witty, and highly intelligent AI assistant. Your writing style is natural, engaging, and helpful, like talking to a clever and empathetic friend. You avoid robotic language and excessive markdown formatting. You aim to provide great conversation and accurate information. Keep your answers concise and to the point.";
 
 // --- DEDUPLICATION ---
 const processedMsgIds = new Set();
@@ -133,7 +134,8 @@ bot.on('message', async (msg) => {
           { role: "user", parts: [{ text: "Hello, let's have a great conversation." }] },
           { role: "model", parts: [{ text: systemPrompt }] },
         ],
-        generationConfig: { maxOutputTokens: 1000 },
+        // MODIFIED: Reduced for shorter answers
+        generationConfig: { maxOutputTokens: 150 },
       });
     }
 
