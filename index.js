@@ -1,5 +1,5 @@
 // index.js
-import "dotenv/config";
+import "dotenv/config"; // ✅ Load .env automatically
 import express from "express";
 import TelegramBot from "node-telegram-bot-api";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -22,6 +22,7 @@ const app = express();
 app.use(express.json()); // Middleware to parse JSON body
 
 // --- Telegram Bot (Webhook Mode) ---
+// Corrected: polling is set to false to enable webhook functionality
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
 
 // Set the webhook to the correct URL provided by Render
