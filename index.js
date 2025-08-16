@@ -1,24 +1,36 @@
 // index.js
 require('dotenv').config();
-const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
+const bodyParser = require('body-parser');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const TelegramBot = require('node-telegram-bot-api');
 
-// --- INITIALIZE APIS ---
-console.log("Initializing services...");
-
+// --- CONFIG ---
 const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
 const geminiApiKey = process.env.GEMINI_API_KEY;
+const port = process.env.PORT || 3000;
+const url = process.env.RENDER_EXTERNAL_URL || `https://your-app.onrender.com`;
 
 if (!telegramToken || !geminiApiKey) {
   console.error("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY in environment.");
   process.exit(1);
 }
 
-const bot = new TelegramBot(telegramToken, { polling: true });
-const genAI = new GoogleGenerativeAI(geminiApiKey);
+// --- EXPRESS APP ---
+const app = express();
+app.use(bodyParser.json());
 
-// --- MODELS ---
+// --- TELEGRAM BOT (webhook mode, no polling) ---
+const bot = new TelegramBot(telegramToken, { polling: false });
+bot.setWebHook(`${url}/bot${telegramToken}`);
+
+app.post(`/bot${telegramToken}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
+
+// --- GEMINI SETUP ---
+const genAI = new GoogleGenerativeAI(geminiApiKey);
 const models = [
   "gemini-2.5-flash",
   "gemini-2.5-flashlite",
@@ -28,7 +40,6 @@ const models = [
   "gemini-1.5-pro"
 ];
 let currentModelIndex = 0;
-
 function getCurrentModel() {
   return genAI.getGenerativeModel({ model: models[currentModelIndex] });
 }
@@ -37,7 +48,7 @@ function getCurrentModel() {
 const chatSessions = {};
 const systemPrompt = "You are ChatGPT 5, a friendly, witty, and highly intelligent AI assistant. Your writing style is natural, engaging, and helpful, like talking to a clever and empathetic friend. You avoid robotic language and excessive markdown formatting. You aim to provide great conversation and accurate information.";
 
-// --- DEDUPLICATION ---
+// --- DEDUP ---
 const processedMsgIds = new Set();
 function shouldProcessOnce(messageId) {
   if (!messageId) return true;
@@ -47,7 +58,7 @@ function shouldProcessOnce(messageId) {
   return true;
 }
 
-// --- RATE LIMITER + QUEUE ---
+// --- RATE LIMITER ---
 function createLimiter({ minGap = 600, concurrency = 1 } = {}) {
   let active = 0;
   let last = 0;
@@ -159,14 +170,12 @@ bot.on('message', async (msg) => {
   }
 });
 
-console.log("Telegram bot is now running with memory and personality.");
+console.log("Telegram bot is running with webhook mode and Gemini model fallback.");
 
 // --- WEB SERVER FOR HEALTH CHECKS ---
-const app = express();
-const port = process.env.PORT || 3000;
 app.get('/', (req, res) => {
   res.send('Hello! Your advanced Gemini-powered Telegram bot is alive.');
 });
 app.listen(port, () => {
-  console.log(`Web server for health checks running on port ${port}`);
+  console.log(`Web server running on port ${port}`);
 });
