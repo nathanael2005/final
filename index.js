@@ -172,9 +172,8 @@ bot.on('message', async (msg) => {
 
 // --- WEB SERVER FOR WEBHOOKS ---
 const app = express();
-app.use(express.json()); // Middleware to parse JSON body
+app.use(express.json());
 
-// MODIFICATION: This route is where Telegram sends updates
 app.post(`/bot${telegramToken}`, (req, res) => {
     bot.processUpdate(req.body);
     res.sendStatus(200);
