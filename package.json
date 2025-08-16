@@ -1,17 +1,16 @@
 {
-  "name": "telegram-bot-final",
+  "name": "gemini-telegram-bot",
   "version": "1.0.0",
-  "description": "My Telegram bot deployed on Render.",
+  "description": "Telegram bot connected to Gemini via Render",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
-  "author": "nathanael2005",
-  "license": "ISC",
   "dependencies": {
-    "@google/generative-ai": "^0.11.5",
-    "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "node-fetch": "^3.3.2",
+    "@google/generative-ai": "^0.21.0"
   }
 }
