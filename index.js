@@ -1,181 +1,85 @@
-// index.js
-require('dotenv').config();
-const express = require('express');
-const bodyParser = require('body-parser');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const TelegramBot = require('node-telegram-bot-api');
+import express from "express";
+import TelegramBot from "node-telegram-bot-api";
+import fetch from "node-fetch"; // needed for webhook check
 
-// --- CONFIG ---
-const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
-const geminiApiKey = process.env.GEMINI_API_KEY;
+const app = express();
+app.use(express.json());
+
+// ============================
+// CONFIG
+// ============================
+const telegramToken = process.env.TELEGRAM_TOKEN; // put your bot token in Render environment
+const renderUrl = process.env.RENDER_EXTERNAL_URL; // Render automatically sets this
 const port = process.env.PORT || 3000;
-const url = process.env.RENDER_EXTERNAL_URL || `https://your-app.onrender.com`;
 
-if (!telegramToken || !geminiApiKey) {
-  console.error("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY in environment.");
+if (!telegramToken) {
+  console.error("❌ TELEGRAM_TOKEN is missing in environment variables");
   process.exit(1);
 }
 
-// --- EXPRESS APP ---
-const app = express();
-app.use(bodyParser.json());
+if (!renderUrl) {
+  console.error("❌ RENDER_EXTERNAL_URL is missing");
+  process.exit(1);
+}
 
-// --- TELEGRAM BOT (webhook mode, no polling) ---
-const bot = new TelegramBot(telegramToken, { polling: false });
-bot.setWebHook(`${url}/bot${telegramToken}`);
+// ============================
+// TELEGRAM BOT
+// ============================
+const bot = new TelegramBot(telegramToken);
 
+// Webhook URL
+const webhookUrl = `${renderUrl}/bot${telegramToken}`;
+
+// Set webhook on startup
+bot.setWebHook(webhookUrl)
+  .then(() => console.log("✅ Webhook set:", webhookUrl))
+  .catch(err => console.error("❌ Error setting webhook:", err));
+
+// ============================
+// EXPRESS ROUTES
+// ============================
+
+// Root check
+app.get("/", (req, res) => {
+  res.send("🚀 Bot server is running");
+});
+
+// Webhook endpoint for Telegram
 app.post(`/bot${telegramToken}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 
-// --- GEMINI SETUP ---
-const genAI = new GoogleGenerativeAI(geminiApiKey);
-const models = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flashlite",
-  "gemini-2.5-pro",
-  "gemini-2.0-flash",
-  "gemini-1.5-flash",
-  "gemini-1.5-pro"
-];
-let currentModelIndex = 0;
-function getCurrentModel() {
-  return genAI.getGenerativeModel({ model: models[currentModelIndex] });
-}
-
-// --- SESSION STORAGE ---
-const chatSessions = {};
-const systemPrompt = "You are ChatGPT 5, a friendly, witty, and highly intelligent AI assistant. Your writing style is natural, engaging, and helpful, like talking to a clever and empathetic friend. You avoid robotic language and excessive markdown formatting. You aim to provide great conversation and accurate information.";
-
-// --- DEDUP ---
-const processedMsgIds = new Set();
-function shouldProcessOnce(messageId) {
-  if (!messageId) return true;
-  if (processedMsgIds.has(messageId)) return false;
-  processedMsgIds.add(messageId);
-  setTimeout(() => processedMsgIds.delete(messageId), 6 * 60 * 60 * 1000);
-  return true;
-}
-
-// --- RATE LIMITER ---
-function createLimiter({ minGap = 600, concurrency = 1 } = {}) {
-  let active = 0;
-  let last = 0;
-  const q = [];
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-  async function pump() {
-    if (active >= concurrency || q.length === 0) return;
-    active++;
-    const { fn, resolve, reject } = q.shift();
-    const wait = Math.max(0, minGap - (Date.now() - last));
-    if (wait) await sleep(wait);
-    try {
-      last = Date.now();
-      const r = await fn();
-      resolve(r);
-    } catch (err) {
-      reject(err);
-    } finally {
-      active--;
-      setImmediate(pump);
-    }
-  }
-
-  return (fn) =>
-    new Promise((resolve, reject) => {
-      q.push({ fn, resolve, reject });
-      pump();
-    });
-}
-const limiter = createLimiter({ minGap: 600, concurrency: 1 });
-
-// --- GEMINI CALL WITH RETRY + MODEL SWITCH ---
-async function callGeminiWithRetry(taskFn, { maxAttempts = 3 } = {}) {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  let attempt = 0;
-
-  while (true) {
-    try {
-      return await limiter(taskFn);
-    } catch (err) {
-      attempt++;
-      const msg = String(err?.message || "");
-      const status = err?.status || err?.response?.status || null;
-      const is429 = status === 429 || /quota|too many requests|rate limit|rateLimit/i.test(msg);
-
-      if (!is429) throw err;
-
-      console.warn(`Rate limit on model ${models[currentModelIndex]} (attempt ${attempt}).`);
-
-      // Switch model if possible
-      if (currentModelIndex < models.length - 1) {
-        currentModelIndex++;
-        console.log(`Switching to fallback model: ${models[currentModelIndex]}`);
-      } else {
-        console.log("Already at last fallback model, applying backoff.");
-      }
-
-      if (attempt >= maxAttempts) throw err;
-
-      const backoff = Math.min(30000, 1000 * 2 ** attempt);
-      await sleep(backoff);
-    }
-  }
-}
-
-// --- BOT LOGIC ---
-bot.on('message', async (msg) => {
-  const chatId = msg.chat?.id;
-  const userMessage = msg.text;
-  const messageId = msg.message_id;
-
-  if (!chatId || !userMessage || userMessage.startsWith('/')) return;
-  if (!shouldProcessOnce(messageId)) return;
-
+// Extra route: Check current webhook info
+app.get("/check-webhook", async (req, res) => {
   try {
-    await bot.sendChatAction(chatId, 'typing');
-
-    if (!chatSessions[chatId]) {
-      console.log(`Creating new chat session for chatId: ${chatId}`);
-      chatSessions[chatId] = getCurrentModel().startChat({
-        history: [
-          { role: "user", parts: [{ text: "Hello, let's have a great conversation." }] },
-          { role: "model", parts: [{ text: systemPrompt }] },
-        ],
-        generationConfig: { maxOutputTokens: 1000 },
-      });
-    }
-
-    const userChat = chatSessions[chatId];
-
-    const geminiText = await callGeminiWithRetry(async () => {
-      const result = await userChat.sendMessage(userMessage);
-      const response = await result.response;
-      const text = typeof response.text === "function" ? response.text() : response.text;
-      return text || "Sorry, I couldn't produce a response.";
-    });
-
-    await bot.sendMessage(chatId, geminiText);
-
-  } catch (error) {
-    console.error("DETAILED ERROR calling Gemini API:", error);
-    const errMsg = String(error?.message || "");
-    if (/429|quota|rate limit|too many requests/i.test(errMsg)) {
-      await bot.sendMessage(chatId, "I'm currently being rate-limited by the AI service. Try again in a few minutes — or consider enabling billing / reducing request rate.");
-    } else {
-      await bot.sendMessage(chatId, "Sorry, I'm having a little trouble thinking right now. Please try again later.");
-    }
+    const resp = await fetch(`https://api.telegram.org/bot${telegramToken}/getWebhookInfo`);
+    const data = await resp.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-console.log("Telegram bot is running with webhook mode and Gemini model fallback.");
+// ============================
+// BOT COMMANDS
+// ============================
+bot.on("message", (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
 
-// --- WEB SERVER FOR HEALTH CHECKS ---
-app.get('/', (req, res) => {
-  res.send('Hello! Your advanced Gemini-powered Telegram bot is alive.');
+  console.log("📩 Message from user:", text);
+
+  if (text === "/start") {
+    bot.sendMessage(chatId, "Hello 👋, I’m alive and connected to Render!");
+  } else {
+    bot.sendMessage(chatId, `You said: ${text}`);
+  }
 });
+
+// ============================
+// START SERVER
+// ============================
 app.listen(port, () => {
-  console.log(`Web server running on port ${port}`);
+  console.log(`🚀 Server running on port ${port}`);
 });
