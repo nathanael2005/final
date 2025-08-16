@@ -1,5 +1,5 @@
 // index.js
-import "dotenv/config"; // ✅ Load .env automatically
+import "dotenv/config";
 import express from "express";
 import TelegramBot from "node-telegram-bot-api";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -19,13 +19,11 @@ if (!TELEGRAM_TOKEN || !GEMINI_API_KEY || !RENDER_EXTERNAL_URL) {
 
 // --- Express App ---
 const app = express();
-app.use(express.json()); // Middleware to parse JSON body
+app.use(express.json());
 
 // --- Telegram Bot (Webhook Mode) ---
-// Corrected: polling is set to false to enable webhook functionality
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
 
-// Set the webhook to the correct URL provided by Render
 bot.setWebhook(`${RENDER_EXTERNAL_URL}/bot${TELEGRAM_TOKEN}`);
 console.log(`✅ Webhook set to ${RENDER_EXTERNAL_URL}/bot${TELEGRAM_TOKEN}`);
 
@@ -52,13 +50,11 @@ bot.on("message", async (msg) => {
 
 // --- Express Routes ---
 
-// This route receives updates from Telegram
 app.post(`/bot${TELEGRAM_TOKEN}`, (req, res) => {
     bot.processUpdate(req.body);
-    res.sendStatus(200); // Send a 200 OK response to Telegram
+    res.sendStatus(200);
 });
 
-// Simple health check route
 app.get("/", (req, res) => {
     res.send("✅ Telegram + Gemini bot is running!");
 });
