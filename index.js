@@ -9,13 +9,26 @@ console.log("Initializing services...");
 
 const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
 const geminiApiKey = process.env.GEMINI_API_KEY;
+// IMPORTANT: Get this from your Render.com dashboard
+const appUrl = process.env.RENDER_EXTERNAL_URL; 
+const port = process.env.PORT || 3000;
 
 if (!telegramToken || !geminiApiKey) {
-  console.error("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY in environment.");
+  console.error("Missing required environment variables.");
   process.exit(1);
 }
 
-const bot = new TelegramBot(telegramToken, { polling: true });
+// MODIFICATION: Initialize bot without polling
+const bot = new TelegramBot(telegramToken);
+
+// MODIFICATION: Set the webhook
+if (appUrl) {
+    bot.setWebhook(`${appUrl}/bot${telegramToken}`);
+    console.log(`Webhook set to ${appUrl}/bot${telegramToken}`);
+} else {
+    console.log("RENDER_EXTERNAL_URL not set. Webhook not configured. Running in local mode?");
+}
+
 const genAI = new GoogleGenerativeAI(geminiApiKey);
 
 // --- MODELS ---
@@ -35,7 +48,6 @@ function getCurrentModel() {
 
 // --- SESSION STORAGE ---
 const chatSessions = {};
-// MODIFIED: Added instruction for concise answers
 const systemPrompt = "You are ChatGPT 5, a friendly, witty, and highly intelligent AI assistant. Your writing style is natural, engaging, and helpful, like talking to a clever and empathetic friend. You avoid robotic language and excessive markdown formatting. You aim to provide great conversation and accurate information. Keep your answers concise and to the point.";
 
 // --- DEDUPLICATION ---
@@ -99,7 +111,6 @@ async function callGeminiWithRetry(taskFn, { maxAttempts = 3 } = {}) {
 
       console.warn(`Rate limit on model ${models[currentModelIndex]} (attempt ${attempt}).`);
 
-      // Switch model if possible
       if (currentModelIndex < models.length - 1) {
         currentModelIndex++;
         console.log(`Switching to fallback model: ${models[currentModelIndex]}`);
@@ -134,7 +145,6 @@ bot.on('message', async (msg) => {
           { role: "user", parts: [{ text: "Hello, let's have a great conversation." }] },
           { role: "model", parts: [{ text: systemPrompt }] },
         ],
-        // MODIFIED: Reduced for shorter answers
         generationConfig: { maxOutputTokens: 150 },
       });
     }
@@ -161,14 +171,20 @@ bot.on('message', async (msg) => {
   }
 });
 
-console.log("Telegram bot is now running with memory and personality.");
-
-// --- WEB SERVER FOR HEALTH CHECKS ---
+// --- WEB SERVER FOR WEBHOOKS ---
 const app = express();
-const port = process.env.PORT || 3000;
-app.get('/', (req, res) => {
-  res.send('Hello! Your advanced Gemini-powered Telegram bot is alive.');
+app.use(express.json()); // Middleware to parse JSON body
+
+// MODIFICATION: This route is where Telegram sends updates
+app.post(`/bot${telegramToken}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
 });
+
+app.get('/', (req, res) => {
+  res.send('Hello! Your advanced Gemini-powered Telegram bot is alive and using webhooks.');
+});
+
 app.listen(port, () => {
-  console.log(`Web server for health checks running on port ${port}`);
+  console.log(`Web server running on port ${port}`);
 });
